@@ -96,3 +96,6 @@ namespace winrt
 
     template<> bool is_guid_of<IMFActivate>(guid const& id) noexcept;
 };
+
+PCHAR GetGUIDName(GUID guid);
+

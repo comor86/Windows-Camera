@@ -64,26 +64,27 @@ namespace winrt::WindowsSample::implementation
 
             GUID subtype;
             spMediaType->GetGUID(MF_MT_SUBTYPE, &subtype);
-            
+            DEBUG_MSG(L"MediaType: %hs, %hs", GetGUIDName(majorType), GetGUIDName(subtype));
             UINT width = 0, height = 0;
             MFGetAttributeSize(spMediaType.get(), MF_MT_FRAME_SIZE, &width, &height);
 
             UINT numerator = 0, denominator = 0;
             MFGetAttributeRatio(spMediaType.get(), MF_MT_FRAME_RATE, &numerator, &denominator);
             int framerate = (int)((float)numerator / denominator + 0.5f); //fps
-
+            DEBUG_MSG(L"FRAME_SIZE: %d, %d, framerate: %d", width, height, framerate);
             // Check if this MediaType conforms to our heuristic we decided to filter with:
             // 1- is it a Video MediaType
             // 2- is it a NV12 subtype
             // 3- is its width between [1, 1920] and its height between [1, 1080]
             // 4- is its framerate less than or equal to 30 fps and above or equal to 15fps
             if (IsEqualGUID(majorType, MFMediaType_Video)
-                && IsEqualGUID(subtype, MFVideoFormat_NV12)
+                && IsEqualGUID(subtype, MFVideoFormat_MJPG)
                 && ((width <= 1920 && width > 0) && (height <= 1080 && height > 0))
                 && (framerate <= 30 && framerate >= 15))
             {
                 DEBUG_MSG(L"Found a valid and compliant Mediatype=%u", i);
                 sourceStreamMediaTypeList[validMediaTypeCount] = spMediaType.detach();
+                //sourceStreamMediaTypeList[validMediaTypeCount]->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);  //wrong
                 validMediaTypeCount++;
             }
         }
@@ -164,6 +165,61 @@ namespace winrt::WindowsSample::implementation
         */
         // <--------------------------------------------- end of processing
 
+        DEBUG_MSG(L"ProcessSample begin");
+
+        DWORD bufferCount = 0;
+        RETURN_IF_FAILED(inputSample->GetBufferCount(&bufferCount));
+        DEBUG_MSG(L"bufferCount:%d", bufferCount);
+        wil::com_ptr_nothrow<IMFMediaBuffer> spBuffer;
+        RETURN_IF_FAILED(inputSample->GetBufferByIndex(0, &spBuffer));
+        LONG pitch = 0;
+        BYTE* bufferStart = nullptr;
+        DWORD bufferMaxLength = 0;
+        DWORD bufferLength = 0;
+        BYTE* pbuf = nullptr;
+
+        RETURN_IF_FAILED(spBuffer->Lock(&pbuf, &bufferMaxLength, &bufferLength));
+        DEBUG_MSG(L"pbuf: %p, bufferLength:%d, bufferMaxLength:%d", pbuf, bufferLength, bufferMaxLength);
+        DEBUG_MSG(L"begin: %02X %02X, end: %02X %02X", pbuf[0], pbuf[1], pbuf[bufferLength - 2], pbuf[bufferLength - 1]);
+        RETURN_IF_FAILED(spBuffer->Unlock());
+
+        MFT_OUTPUT_STREAM_INFO osi;
+        RETURN_IF_FAILED(m_spTransformIn->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
+        RETURN_IF_FAILED(m_spTransformIn->ProcessInput(0, inputSample, 0));
+        RETURN_IF_FAILED(m_spTransformIn->GetOutputStreamInfo(0, &osi));
+
+        DWORD status = 0;
+        RETURN_IF_FAILED(m_spTransformIn->GetOutputStatus(&status));
+        DEBUG_MSG(L"GetOutputStatus: %d", status);
+        if (status == MFT_OUTPUT_STATUS_SAMPLE_READY)
+        {
+        }
+
+        wil::com_ptr_nothrow<IMFSample> outputSample;
+        wil::com_ptr_nothrow<IMFMediaBuffer> outputMediaBuffer;
+
+        RETURN_IF_FAILED(MFCreateSample(&outputSample));
+        RETURN_IF_FAILED(MFCreateMemoryBuffer(static_cast<DWORD>(osi.cbSize), outputMediaBuffer.put()));
+        RETURN_IF_FAILED(outputSample->AddBuffer(outputMediaBuffer.get()));
+
+        MFT_OUTPUT_DATA_BUFFER output_data = { 0, outputSample.get() };
+        RETURN_IF_FAILED(m_spTransformIn->ProcessOutput(0, 1, &output_data, &status));
+        DEBUG_MSG(L"ProcessOutput Status: %d", status);
+
+        RETURN_IF_FAILED(m_spTransformIn->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0));
+        RETURN_IF_FAILED(m_spTransformIn->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0));
+
+        RETURN_IF_FAILED(outputMediaBuffer->Lock(&pbuf, &bufferMaxLength, &bufferLength));
+        DEBUG_MSG(L"pbuf: %p, bufferLength:%d, bufferMaxLength:%d", pbuf, bufferLength, bufferMaxLength);
+        DEBUG_MSG(L"begin: %02X %02X, end: %02X %02X", pbuf[0], pbuf[1], pbuf[bufferLength - 2], pbuf[bufferLength - 1]);
+
+        //do some opencv or ML things
+        //....
+
+        RETURN_IF_FAILED(outputMediaBuffer->Unlock());
+
+        DEBUG_MSG(L"ProcessSample end");
+
         if (SUCCEEDED(_CheckShutdownRequiresLock()))
         {
             // queue event
@@ -171,7 +227,7 @@ namespace winrt::WindowsSample::implementation
                 MEMediaSample,
                 GUID_NULL,
                 S_OK,
-                inputSample));
+                inputSample));  //outputSample.get()?
         }
         return S_OK;
     }
@@ -342,7 +398,7 @@ namespace winrt::WindowsSample::implementation
 
         MediaEventType met;
         RETURN_IF_FAILED(spEvent->GetType(&met));
-        DEBUG_MSG(L"[%d] OnMediaStreamEvent, streamId: %d, met:%d ", m_dwStreamId, met);
+        DEBUG_MSG(L"[%d] OnMediaStreamEvent enter, event:%d ", m_dwStreamId, met);
         
         // This shows how to intercept sample from physical camera
         // and do custom processing on the sample.
@@ -370,6 +426,7 @@ namespace winrt::WindowsSample::implementation
         {
             RETURN_IF_FAILED(SetStreamState(MF_STREAM_STATE_RUNNING));
             RETURN_IF_FAILED(Start());
+            RETURN_IF_FAILED(_InitializeMft());
         }
         else if (met == MEStreamStopped)
         {
@@ -439,12 +496,14 @@ namespace winrt::WindowsSample::implementation
 
         wil::com_ptr_nothrow<IMFMediaType> spMediaType;
 
-        GUID subType;
+        GUID majorType, subType;
         RETURN_IF_FAILED(spMTHandler->GetCurrentMediaType(&spMediaType));
+        RETURN_IF_FAILED(spMediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
         RETURN_IF_FAILED(spMediaType->GetGUID(MF_MT_SUBTYPE, &subType));
         MFGetAttributeSize(spMediaType.get(), MF_MT_FRAME_SIZE, &m_width, &m_height);
+        MFGetAttributeRatio(spMediaType.get(), MF_MT_FRAME_RATE, &m_numerator, &m_denominator);
 
-        DEBUG_MSG(L"AugmentedMediaStream Start().. with mediatype: %s, %dx%d ", winrt::to_hstring(subType).data(), m_width, m_height);
+        DEBUG_MSG(L"AugmentedMediaStream Start().. with mediatype: %hs, %hs, %dx%d ", GetGUIDName(majorType), GetGUIDName(subType), m_width, m_height);
 
         // Post MEStreamStarted event to signal stream has started 
         RETURN_IF_FAILED(m_spEventQueue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
@@ -490,6 +549,64 @@ namespace winrt::WindowsSample::implementation
         return S_OK;
     }
 
+    HRESULT AugmentedMediaStream::_InitializeMft()
+    {
+        wil::unique_cotaskmem_array_ptr<wil::com_ptr_nothrow<IMFActivate>> activate =
+            wilEx::make_unique_cotaskmem_array<wil::com_ptr_nothrow<IMFActivate>>(10);
+        RETURN_IF_NULL_ALLOC(activate.get());
     
-}
+        UINT32 flags = MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_LOCALMFT | MFT_ENUM_FLAG_SORTANDFILTER;
+        MFT_REGISTER_TYPE_INFO intput_type = { MFMediaType_Video, MFVideoFormat_MJPG };
+        MFT_REGISTER_TYPE_INFO output_type = { MFMediaType_Video, MFVideoFormat_YUY2 };
+        UINT32 count = 0;
+        RETURN_IF_FAILED(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, flags, &intput_type, &output_type, &activate, &count));
+        if (count > 0)
+        {
+            RETURN_IF_FAILED(activate[0]->ActivateObject(IID_PPV_ARGS(&m_spTransformIn)));
+            DEBUG_MSG(L"found decoder");
+            DWORD inCount = 0;
+            DWORD outCount = 0;
+            m_spTransformIn->GetStreamCount(&inCount, &outCount);
+            DEBUG_MSG(L"inCount: %d, outCount: %d", inCount, outCount);
+            HRESULT hr;
+            GUID id = { 0 };
+            IMFMediaType* inputMediaType;
+            IMFMediaType* outputMediaType;
+            for (int i = 0; i< inCount; ++i)
+            {
+                inputMediaType = nullptr;
+                hr = m_spTransformIn->GetInputAvailableType(0, i, &inputMediaType);
+                RETURN_IF_FAILED(hr);
+                hr = inputMediaType->GetGUID(MF_MT_SUBTYPE, &id);
+                RETURN_IF_FAILED(hr);
+                DEBUG_MSG(L"input type: %d, %hs", i, GetGUIDName(id));
+            }
+            hr = MFSetAttributeSize(inputMediaType, MF_MT_FRAME_SIZE, m_width, m_height);
+            DEBUG_MSG(L"MFSetAttributeSize : %08x", hr);
+            hr = MFSetAttributeRatio(inputMediaType, MF_MT_FRAME_RATE, m_numerator, m_denominator);
+            DEBUG_MSG(L"MFSetAttributeRatio : %08x", hr);
+            hr = m_spTransformIn->SetInputType(0, inputMediaType, 0);
+            DEBUG_MSG(L"SetInputType : %08x", hr);
+            RETURN_IF_FAILED(hr);
 
+            for (int i = 0; i < outCount; ++i)
+            {
+                outputMediaType = nullptr;
+                hr = m_spTransformIn->GetOutputAvailableType(0, i, &outputMediaType);
+                DEBUG_MSG(L"GetOutputAvailableType : %08x", hr);
+                RETURN_IF_FAILED(hr);
+                hr = outputMediaType->GetGUID(MF_MT_SUBTYPE, &id);
+                RETURN_IF_FAILED(hr);
+                DEBUG_MSG(L"output type: %d, %hs", i, GetGUIDName(id));
+            }
+            hr = m_spTransformIn->SetOutputType(0, outputMediaType, 0);
+            DEBUG_MSG(L"SetOutputType : %08x", hr);
+            RETURN_IF_FAILED(hr);
+        }
+        else
+        {
+            DEBUG_MSG(L"no decoder found");
+        }
+        return S_OK;
+    }
+}

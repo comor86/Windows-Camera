@@ -65,6 +65,10 @@ namespace winrt::WindowsSample::implementation
         UINT32 m_width;
         UINT32 m_height;
         bool m_isCustomFXEnabled = false;
+        HRESULT _InitializeMft();
+        UINT m_numerator = 0;
+        UINT m_denominator = 0;
+        wil::com_ptr_nothrow<IMFTransform> m_spTransformIn;
     };
 }
 
