@@ -217,50 +217,56 @@ namespace winrt::WindowsSample::implementation
                 // Update the source camera descriptor we proper stream
                 RETURN_IF_FAILED(m_spDevSourcePDesc->SelectStream(m_desiredStreamIdx));
 
+                wil::com_ptr_nothrow<IMFMediaTypeHandler> spStreamMediaTypeHandler;
+                RETURN_IF_FAILED(streamDesc->GetMediaTypeHandler(&spStreamMediaTypeHandler));
+                wil::com_ptr_nothrow<IMFMediaType> spCurrentMediaType;
+                RETURN_IF_FAILED(spStreamMediaTypeHandler->GetCurrentMediaType(&spCurrentMediaType));
+                GUID majorType1;
+                spCurrentMediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType1);
+                GUID subType1;
+                spCurrentMediaType->GetGUID(MF_MT_SUBTYPE, &subType1);
+                UINT width1 = 0, height1 = 0;
+                MFGetAttributeSize(spCurrentMediaType.get(), MF_MT_FRAME_SIZE, &width1, &height1);
+                UINT numerator1 = 0, denominator1 = 0;
+                MFGetAttributeRatio(spCurrentMediaType.get(), MF_MT_FRAME_RATE, &numerator1, &denominator1);
+                DEBUG_MSG(L"spCurrentMediaType1: %hs, %hs, %dx%d ", GetGUIDName(majorType1), GetGUIDName(subType1), width1, height1);
                 BOOL selected2 = FALSE;
                 wil::com_ptr_nothrow<IMFStreamDescriptor> spDevStreamDescriptor;
                 RETURN_IF_FAILED(m_spDevSourcePDesc->GetStreamDescriptorByIndex(m_desiredStreamIdx, &selected2, &spDevStreamDescriptor));
                 wil::com_ptr_nothrow<IMFMediaTypeHandler> spDevSourceStreamMediaTypeHandler;
                 RETURN_IF_FAILED(spDevStreamDescriptor->GetMediaTypeHandler(&spDevSourceStreamMediaTypeHandler));
 
-                wil::com_ptr_nothrow<IMFMediaTypeHandler> spStreamMediaTypeHandler;
-                RETURN_IF_FAILED(streamDesc->GetMediaTypeHandler(&spStreamMediaTypeHandler));
+                ULONG ulMediaTypeCount = 0;
+                RETURN_IF_FAILED(spDevSourceStreamMediaTypeHandler->GetMediaTypeCount(&ulMediaTypeCount));
 
-                wil::com_ptr_nothrow<IMFMediaType> spCurrentMediaType;
-                RETURN_IF_FAILED(spStreamMediaTypeHandler->GetCurrentMediaType(&spCurrentMediaType));
+                for (DWORD i = 0; i < ulMediaTypeCount; i++)
                 {
-                    GUID majorType;
-                    spCurrentMediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType);
+                    wil::com_ptr_nothrow<IMFMediaType> spDevMediaType;
+                    RETURN_IF_FAILED(spDevSourceStreamMediaTypeHandler->GetMediaTypeByIndex(i, &spDevMediaType));
+                    GUID majorType2;
+                    spDevMediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType2);
 
-                    GUID subtype;
-                    spCurrentMediaType->GetGUID(MF_MT_SUBTYPE, &subtype);
+                    GUID subType2;
+                    spDevMediaType->GetGUID(MF_MT_SUBTYPE, &subType2);
 
-                    UINT width = 0, height = 0;
-                    MFGetAttributeSize(spCurrentMediaType.get(), MF_MT_FRAME_SIZE, &width, &height);
+                    UINT width2 = 0, height2 = 0;
+                    MFGetAttributeSize(spDevMediaType.get(), MF_MT_FRAME_SIZE, &width2, &height2);
 
-                    UINT numerator = 0, denominator = 0;
-                    MFGetAttributeRatio(spCurrentMediaType.get(), MF_MT_FRAME_RATE, &numerator, &denominator);
-                }
+                    UINT numerator2 = 0, denominator2 = 0;
+                    MFGetAttributeRatio(spDevMediaType.get(), MF_MT_FRAME_RATE, &numerator2, &denominator2);
 
+                    DEBUG_MSG(L"spDevMediaType2: %hs, %hs, %dx%d ", GetGUIDName(majorType2), GetGUIDName(subType2), width2, height2);
+
+                    if (IsEqualGUID(majorType2, MFMediaType_Video)
+                        && IsEqualGUID(subType2, MFVideoFormat_MJPG)
+                        && (width1 == width2) 
+                        && (height1 == height2))
                 {
-                    wil::com_ptr_nothrow<IMFMediaType> spCurrentMediaType2;
-                    RETURN_IF_FAILED(spDevSourceStreamMediaTypeHandler->GetCurrentMediaType(&spCurrentMediaType2));
-                    GUID majorType;
-                    spCurrentMediaType2->GetGUID(MF_MT_MAJOR_TYPE, &majorType);
-
-                    GUID subtype;
-                    spCurrentMediaType2->GetGUID(MF_MT_SUBTYPE, &subtype);
-
-                    UINT width = 0, height = 0;
-                    MFGetAttributeSize(spCurrentMediaType2.get(), MF_MT_FRAME_SIZE, &width, &height);
-
-                    UINT numerator = 0, denominator = 0;
-                    MFGetAttributeRatio(spCurrentMediaType2.get(), MF_MT_FRAME_RATE, &numerator, &denominator);
+                        RETURN_IF_FAILED(spDevSourceStreamMediaTypeHandler->SetCurrentMediaType(spDevMediaType.get()));
+                        RETURN_IF_FAILED(m_spDevSource->Start(m_spDevSourcePDesc.get(), pguidTimeFormat, pvarStartPos));
+                        break;
+                    }
                 }
-
-                RETURN_IF_FAILED(spDevSourceStreamMediaTypeHandler->SetCurrentMediaType(spCurrentMediaType.get()));
-
-                RETURN_IF_FAILED(m_spDevSource->Start(m_spDevSourcePDesc.get(), pguidTimeFormat, pvarStartPos));
             }
             else if (wasSelected)
             {

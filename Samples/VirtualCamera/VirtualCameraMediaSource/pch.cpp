@@ -6,7 +6,7 @@
 #include "pch.h"
 
 // When you are using pre-compiled headers, this source file is necessary for compilation to succeed.
-PCHAR GetGUIDName(GUID guid)
+const CHAR* GetGUIDName(GUID guid)
 {
     if (IsEqualGUID(guid, MFMediaType_Default))                 return "MFMediaType_Default";
     else if (IsEqualGUID(guid, MFMediaType_Audio))              return "MFMediaType_Audio";
@@ -86,4 +86,20 @@ PCHAR GetGUIDName(GUID guid)
     else if (IsEqualGUID(MFVideoFormat_VP90, guid))             return "MFVideoFormat_VP90,   ";
     else if (IsEqualGUID(MFVideoFormat_ORAW, guid))             return "MFVideoFormat_ORAW,   ";
     else return "Unknown";
+}
+const CHAR* GetEventName(DWORD met)
+{
+    switch (met)
+    {
+    case 201:   return "MESourceStarted";
+    case 202:   return "MEStreamStarted";
+    case 205:   return "MENewStream";
+    case 207:   return "MESourceStopped";
+    case 208:   return "MEStreamStopped";
+    case 212:   return "MEEndOfStream";
+    case 213:   return "MEMediaSample";
+    case 214:   return "MEStreamTick";
+    default:    return "Other";
+        break;
+    }
 }
